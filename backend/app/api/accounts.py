@@ -59,14 +59,15 @@ async def list_accounts(
 
 @router.get("/stats")
 async def stats(db: AsyncSession = Depends(get_db)):
-    """概览统计：总账号、状态分布、邮件/未读/今日收件、账号邮件分布。"""
+    """概览统计：KPI + 多维度图表数据（趋势/状态/验证码/域名）。"""
     from datetime import datetime, timezone, timedelta
-    from ..models import Message
+    from ..models import Message, SiteRegistration
 
     total = (await db.execute(select(func.count(EmailAccount.id)))).scalar_one()
     by_status = (await db.execute(
         select(EmailAccount.status, func.count(EmailAccount.id)).group_by(EmailAccount.status)
     )).all()
+    status_map = {s: int(c) for s, c in by_status}
     total_msgs = (await db.execute(select(func.sum(EmailAccount.message_count)))).scalar_one() or 0
 
     unread = (await db.execute(
@@ -76,36 +77,79 @@ async def stats(db: AsyncSession = Depends(get_db)):
         select(func.count(Message.id)).where(Message.verification_code.is_not(None))
     )).scalar_one()
 
-    # 今日（UTC）新入库邮件
     now = datetime.now(timezone.utc)
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     today_msgs = (await db.execute(
         select(func.count(Message.id)).where(Message.created_at >= day_start)
     )).scalar_one()
+    today_codes = (await db.execute(
+        select(func.count(Message.id)).where(
+            Message.created_at >= day_start,
+            Message.verification_code.is_not(None),
+        )
+    )).scalar_one()
 
-    # 近 7 天每日入库量（用于折线图）
-    week_start = day_start - timedelta(days=6)
+    # 近 90 天按日聚合：总邮件 + 验证码邮件（前端可切 7/30/90）
+    range_start = day_start - timedelta(days=89)
     daily_rows = (await db.execute(
         select(
             func.date_trunc("day", Message.created_at).label("day"),
             func.count(Message.id),
+            func.count(Message.verification_code),
         )
-        .where(Message.created_at >= week_start)
+        .where(Message.created_at >= range_start)
         .group_by("day")
         .order_by("day")
     )).all()
-    day_map = {}
-    for d, c in daily_rows:
+    day_map: dict[str, dict] = {}
+    for d, c, code_c in daily_rows:
         if d is None:
             continue
         key = d.date().isoformat() if hasattr(d, "date") else str(d)[:10]
-        day_map[key] = int(c)
-    daily_series = []
-    for i in range(7):
-        day = (week_start + timedelta(days=i)).date()
-        daily_series.append({"date": day.isoformat(), "count": day_map.get(day.isoformat(), 0)})
+        day_map[key] = {"count": int(c), "code_count": int(code_c or 0)}
 
-    # 账号邮件分布（Top 8，用于环形图）
+    def build_series(days: int) -> list[dict]:
+        start = day_start - timedelta(days=days - 1)
+        out = []
+        for i in range(days):
+            day = (start + timedelta(days=i)).date()
+            key = day.isoformat()
+            item = day_map.get(key, {"count": 0, "code_count": 0})
+            out.append({"date": key, "count": item["count"], "code_count": item["code_count"]})
+        return out
+
+    daily_series = build_series(7)          # 兼容旧字段
+    series_7 = daily_series
+    series_30 = build_series(30)
+    series_90 = build_series(90)
+
+    # 近 24 小时按小时分布（动态感更强）
+    hour_start = now - timedelta(hours=23)
+    hour_rows = (await db.execute(
+        select(
+            func.date_trunc("hour", Message.created_at).label("hour"),
+            func.count(Message.id),
+        )
+        .where(Message.created_at >= hour_start)
+        .group_by("hour")
+        .order_by("hour")
+    )).all()
+    hour_map = {}
+    for h, c in hour_rows:
+        if h is None:
+            continue
+        key = h.strftime("%Y-%m-%d %H:00") if hasattr(h, "strftime") else str(h)[:13] + ":00"
+        hour_map[key] = int(c)
+    hourly_series = []
+    for i in range(24):
+        h = (hour_start + timedelta(hours=i)).replace(minute=0, second=0, microsecond=0)
+        key = h.strftime("%Y-%m-%d %H:00")
+        hourly_series.append({
+            "hour": h.strftime("%H:00"),
+            "count": hour_map.get(key, 0),
+        })
+
+    # 账号邮件分布 Top 8
     top_accounts = (await db.execute(
         select(EmailAccount.email, EmailAccount.message_count, EmailAccount.status)
         .order_by(EmailAccount.message_count.desc(), EmailAccount.id.desc())
@@ -116,15 +160,57 @@ async def stats(db: AsyncSession = Depends(get_db)):
         for e, c, s in top_accounts
     ]
 
+    # 热门发件域名 / 注册站点 Top 8
+    top_domains = (await db.execute(
+        select(Message.from_domain, func.count(Message.id))
+        .where(Message.from_domain != "")
+        .group_by(Message.from_domain)
+        .order_by(func.count(Message.id).desc())
+        .limit(8)
+    )).all()
+    domain_ranking = [
+        {"domain": d or "unknown", "count": int(c)}
+        for d, c in top_domains
+    ]
+
+    top_sites = (await db.execute(
+        select(SiteRegistration.site_domain, SiteRegistration.site_name, func.sum(SiteRegistration.email_count))
+        .group_by(SiteRegistration.site_domain, SiteRegistration.site_name)
+        .order_by(func.sum(SiteRegistration.email_count).desc())
+        .limit(8)
+    )).all()
+    site_ranking = [
+        {"domain": d or "unknown", "name": n or d or "unknown", "count": int(c or 0)}
+        for d, n, c in top_sites
+    ]
+
+    # 账号健康度
+    health = {
+        "ok": status_map.get("ok", 0),
+        "error": status_map.get("error", 0),
+        "pending": status_map.get("pending", 0),
+        "disabled": (await db.execute(
+            select(func.count(EmailAccount.id)).where(EmailAccount.enabled == False)  # noqa: E712
+        )).scalar_one(),
+    }
+
     return {
         "total_accounts": total,
-        "by_status": {s: c for s, c in by_status},
+        "by_status": status_map,
         "total_messages": int(total_msgs),
         "unread_messages": int(unread),
         "today_messages": int(today_msgs),
+        "today_codes": int(today_codes),
         "code_messages": int(with_code),
         "daily_series": daily_series,
+        "series_7": series_7,
+        "series_30": series_30,
+        "series_90": series_90,
+        "hourly_series": hourly_series,
         "distribution": distribution,
+        "domain_ranking": domain_ranking,
+        "site_ranking": site_ranking,
+        "health": health,
     }
 
 
