@@ -13,25 +13,23 @@ import {
   stopWatch,
   getWatchStatus,
   checkAccount,
-  checkAccountsBatch
+  checkAccountsBatch,
+  getCheckJob,
+  cancelCheckJob
 } from '../api'
 
 const router = useRouter()
-
-// ========== 列表数据与查询 ==========
 const loading = ref(false)
 const tableData = ref([])
 const total = ref(0)
 
-// 查询条件
 const query = reactive({
   q: '',
   status: '',
   page: 1,
-  size: 20
+  size: 12
 })
 
-// 状态选项
 const statusOptions = [
   { label: '全部', value: '' },
   { label: '正常', value: 'ok' },
@@ -39,14 +37,24 @@ const statusOptions = [
   { label: '待处理', value: 'pending' }
 ]
 
-// 状态对应的标签类型与文案
-const statusMeta = {
-  ok: { type: 'success', text: '正常' },
-  error: { type: 'danger', text: '错误' },
-  pending: { type: 'info', text: '待处理' }
+function statusMeta(status) {
+  if (status === 'ok') return { text: '正常', cls: 'ok' }
+  if (status === 'error') return { text: '异常', cls: 'err' }
+  return { text: '待测', cls: 'pending' }
 }
 
-// 加载账号列表
+function providerOf(email = '') {
+  const e = email.toLowerCase()
+  if (e.includes('gmail')) return { name: 'Gmail', color: '#ea4335', letter: 'G' }
+  if (e.includes('outlook') || e.includes('hotmail') || e.includes('live.')) {
+    return { name: 'Outlook', color: '#0078d4', letter: 'O' }
+  }
+  if (e.includes('yahoo')) return { name: 'Yahoo', color: '#6001d2', letter: 'Y' }
+  if (e.includes('icloud') || e.includes('me.com')) return { name: 'iCloud', color: '#3b82f6', letter: 'i' }
+  if (e.includes('zoho')) return { name: 'Zoho', color: '#f97316', letter: 'Z' }
+  return { name: '邮箱', color: '#4f6ef7', letter: (email[0] || 'M').toUpperCase() }
+}
+
 async function loadAccounts() {
   loading.value = true
   try {
@@ -65,13 +73,11 @@ async function loadAccounts() {
   }
 }
 
-// 搜索（回到第一页）
 function handleSearch() {
   query.page = 1
   loadAccounts()
 }
 
-// 分页变化
 function handlePageChange(page) {
   query.page = page
   loadAccounts()
@@ -83,27 +89,22 @@ function handleSizeChange(size) {
   loadAccounts()
 }
 
-// 格式化时间显示
 function formatTime(t) {
-  if (!t) return '-'
+  if (!t) return '尚未拉取'
   const d = new Date(t)
   if (isNaN(d.getTime())) return t
   return d.toLocaleString('zh-CN', { hour12: false })
 }
 
-// ========== 导入功能 ==========
+// ========== 导入 ==========
 const importDialogVisible = ref(false)
-const importTab = ref('file') // file 或 text
+const importTab = ref('file')
 const importText = ref('')
 const importLoading = ref(false)
-const uploadRef = ref(null)
 const selectedFile = ref(null)
-
-// 导入结果
 const importResult = ref(null)
 const resultDialogVisible = ref(false)
 
-// 打开导入弹窗
 function openImportDialog() {
   importTab.value = 'file'
   importText.value = ''
@@ -111,12 +112,10 @@ function openImportDialog() {
   importDialogVisible.value = true
 }
 
-// el-upload 选择文件后（手动上传模式）
 function handleFileChange(file) {
   selectedFile.value = file.raw
 }
 
-// 执行导入
 async function handleImport() {
   importLoading.value = true
   try {
@@ -139,7 +138,6 @@ async function handleImport() {
     importResult.value = res
     importDialogVisible.value = false
     resultDialogVisible.value = true
-    // 重新加载列表
     loadAccounts()
   } catch (e) {
     // 错误已提示
@@ -149,24 +147,93 @@ async function handleImport() {
 }
 
 // ========== 行操作 ==========
-// 单行刷新的 loading 状态记录（按 id）
 const refreshingIds = ref(new Set())
+const checkingIds = ref(new Set())
+const batchChecking = ref(false)
+const checkResultVisible = ref(false)
+const checkResult = ref(null)
+const checkJobVisible = ref(false)
+const checkJob = ref(null)
+let checkJobTimer = null
+let checkJobId = null
+
+function stopCheckJobPolling() {
+  if (checkJobTimer) {
+    clearInterval(checkJobTimer)
+    checkJobTimer = null
+  }
+}
+
+async function pollCheckJobOnce() {
+  if (!checkJobId) return
+  try {
+    const job = await getCheckJob(checkJobId)
+    checkJob.value = job
+    // 终态：展示结果
+    if (['done', 'error', 'cancelled'].includes(job.status)) {
+      stopCheckJobPolling()
+      batchChecking.value = false
+      checkResult.value = {
+        total: job.total,
+        alive: job.alive,
+        dead: job.dead,
+        items: job.items || []
+      }
+      // 稍等一下让用户看到 100%，再切结果
+      setTimeout(async () => {
+        checkJobVisible.value = false
+        checkResultVisible.value = true
+        await loadAccounts()
+      }, 400)
+    }
+  } catch (e) {
+    // 轮询失败不立刻结束任务（后端可能还在跑）；连续失败由用户手动关闭
+  }
+}
+
+function startCheckJobPolling(jobId) {
+  stopCheckJobPolling()
+  checkJobId = jobId
+  // 立即拉一次，再定时轮询
+  pollCheckJobOnce()
+  checkJobTimer = setInterval(pollCheckJobOnce, 1500)
+}
+
+async function handleCancelCheckJob() {
+  if (!checkJobId) {
+    checkJobVisible.value = false
+    batchChecking.value = false
+    return
+  }
+  try {
+    await cancelCheckJob(checkJobId)
+  } catch (e) {
+    // 忽略
+  } finally {
+    stopCheckJobPolling()
+    batchChecking.value = false
+    checkJobVisible.value = false
+    // 取消后也刷新列表，展示已测完的那部分状态
+    loadAccounts()
+  }
+}
 
 function isRefreshing(id) {
   return refreshingIds.value.has(id)
 }
+function isChecking(id) {
+  return checkingIds.value.has(id)
+}
 
-// 立即刷新某账号
 async function handleRefresh(row) {
   refreshingIds.value.add(row.id)
-  // 触发响应式更新
   refreshingIds.value = new Set(refreshingIds.value)
   try {
     const res = await refreshAccount(row.id)
-    // 局部更新该行数据
     row.status = res.status
     row.last_error = res.last_error
     row.message_count = res.message_count
+    row.last_polled_at = new Date().toISOString()
     ElMessage.success('刷新完成')
   } catch (e) {
     // 错误已提示
@@ -176,16 +243,6 @@ async function handleRefresh(row) {
   }
 }
 
-// 单行测活
-const checkingIds = ref(new Set())
-const batchChecking = ref(false)
-const checkResultVisible = ref(false)
-const checkResult = ref(null)
-
-function isChecking(id) {
-  return checkingIds.value.has(id)
-}
-
 async function handleCheck(row) {
   checkingIds.value.add(row.id)
   checkingIds.value = new Set(checkingIds.value)
@@ -193,11 +250,9 @@ async function handleCheck(row) {
     const res = await checkAccount(row.id)
     row.status = res.status
     row.last_error = res.error
-    if (res.alive) {
-      ElMessage.success(`${row.email} 存活`)
-    } else {
-      ElMessage.error(`${row.email} 失效：${res.error || '未知错误'}`)
-    }
+    row.last_polled_at = new Date().toISOString()
+    if (res.alive) ElMessage.success(`${row.email} 存活`)
+    else ElMessage.error(`${row.email} 失效：${res.error || '未知错误'}`)
   } catch (e) {
     // 错误已提示
   } finally {
@@ -206,7 +261,6 @@ async function handleCheck(row) {
   }
 }
 
-// 批量测活：当前页 / 全部启用
 async function handleBatchCheck(scope) {
   let ids = null
   let tip = '全部启用账号'
@@ -228,25 +282,45 @@ async function handleBatchCheck(scope) {
     return
   }
   batchChecking.value = true
+  checkJob.value = {
+    status: 'running',
+    total: ids ? ids.length : 0,
+    done: 0,
+    alive: 0,
+    dead: 0,
+    percent: 0,
+    elapsed_seconds: 0
+  }
+  checkJobVisible.value = true
   try {
-    const res = await checkAccountsBatch(ids)
-    checkResult.value = res
-    checkResultVisible.value = true
-    // 刷新列表状态
-    await loadAccounts()
+    // 异步任务：秒回 job_id，再轮询进度（解决「前端超时、后端还在测」）
+    const job = await checkAccountsBatch(ids)
+    checkJob.value = job
+    if (['done', 'error', 'cancelled'].includes(job.status)) {
+      batchChecking.value = false
+      checkResult.value = {
+        total: job.total,
+        alive: job.alive,
+        dead: job.dead,
+        items: job.items || []
+      }
+      checkJobVisible.value = false
+      checkResultVisible.value = true
+      await loadAccounts()
+    } else {
+      startCheckJobPolling(job.job_id)
+    }
   } catch (e) {
-    // 错误已提示
-  } finally {
     batchChecking.value = false
+    checkJobVisible.value = false
+    // 错误已提示
   }
 }
 
-// 查看邮件：跳转到邮件列表并携带 account_id
 function handleViewMessages(row) {
   router.push({ path: '/messages', query: { account_id: row.id } })
 }
 
-// 删除账号
 async function handleDelete(row) {
   try {
     await ElMessageBox.confirm(
@@ -262,7 +336,7 @@ async function handleDelete(row) {
   }
 }
 
-// ========== 注册网站弹窗 ==========
+// ========== 注册网站 ==========
 const sitesDialogVisible = ref(false)
 const sitesLoading = ref(false)
 const sitesData = ref([])
@@ -274,8 +348,7 @@ async function handleViewSites(row) {
   sitesDialogVisible.value = true
   sitesLoading.value = true
   try {
-    const res = await getAccountSites(row.id)
-    sitesData.value = res || []
+    sitesData.value = (await getAccountSites(row.id)) || []
   } catch (e) {
     // 错误已提示
   } finally {
@@ -283,8 +356,7 @@ async function handleViewSites(row) {
   }
 }
 
-// ========== 临时监听收码 ==========
-// 只对单个账号短时快拉：点开即开始监听，拿到验证码或超时自动停止。
+// ========== 临时监听 ==========
 const watchDialogVisible = ref(false)
 const watchEmail = ref('')
 const watchAccountId = ref(null)
@@ -300,7 +372,6 @@ const watchState = reactive({
 })
 let watchTimer = null
 
-// 把后端返回的监听状态同步到本地
 function applyWatchStatus(s) {
   watchState.active = !!s.active
   watchState.remaining = s.remaining_seconds || 0
@@ -319,7 +390,6 @@ function resetWatchState() {
   })
 }
 
-// 打开弹窗并开始监听
 async function openWatchDialog(row) {
   watchEmail.value = row.email
   watchAccountId.value = row.id
@@ -334,11 +404,10 @@ async function beginWatch() {
     applyWatchStatus(res)
     startWatchPolling()
   } catch (e) {
-    // 错误已提示（如并发上限 429）
+    // 错误已提示
   }
 }
 
-// 前端每 2 秒轮询一次监听状态，更新倒计时并捕获验证码
 function startWatchPolling() {
   stopWatchPolling()
   watchTimer = setInterval(async () => {
@@ -346,7 +415,6 @@ function startWatchPolling() {
     try {
       const s = await getWatchStatus(watchAccountId.value)
       applyWatchStatus(s)
-      // 拿到码或监听已结束 → 停止前端轮询
       if (s.latest_code || !s.active) {
         stopWatchPolling()
         if (s.latest_code) ElMessage.success('已收到验证码')
@@ -364,24 +432,18 @@ function stopWatchPolling() {
   }
 }
 
-// 手动停止监听（保留弹窗展示结果）
 async function handleStopWatch() {
   stopWatchPolling()
   try {
-    const s = await stopWatch(watchAccountId.value)
-    applyWatchStatus(s)
-  } catch (e) {
-    // 忽略
-  }
+    applyWatchStatus(await stopWatch(watchAccountId.value))
+  } catch (e) { /* 忽略 */ }
 }
 
-// 重新监听（结束后再等一次）
 async function restartWatch() {
   resetWatchState()
   await beginWatch()
 }
 
-// 弹窗关闭：停止前端轮询 + 通知后端停止监听 + 刷新列表
 async function onWatchClosed() {
   stopWatchPolling()
   const id = watchAccountId.value
@@ -392,11 +454,10 @@ async function onWatchClosed() {
   loadAccounts()
 }
 
-// 复制验证码（带降级方案）
 function copyCode() {
   const code = watchState.code
   if (!code) return
-  if (navigator.clipboard && navigator.clipboard.writeText) {
+  if (navigator.clipboard?.writeText) {
     navigator.clipboard.writeText(code).then(() => ElMessage.success('验证码已复制'))
   } else {
     const ta = document.createElement('textarea')
@@ -410,46 +471,21 @@ function copyCode() {
 }
 
 onMounted(loadAccounts)
-onUnmounted(stopWatchPolling)
+onUnmounted(() => {
+  stopWatchPolling()
+  stopCheckJobPolling()
+})
 </script>
 
 <template>
   <div class="page-shell">
-    <div class="hero-row">
+    <div class="hero">
       <div>
         <h2 class="page-title" style="font-size:24px">邮箱管理</h2>
-        <p class="page-subtitle">导入配置、测活、刷新与监听收码</p>
+        <p class="page-subtitle">卡片式管理全部邮箱 · 导入 / 测活 / 刷新 / 收码</p>
       </div>
-    </div>
-    <!-- 工具栏 -->
-    <div class="toolbar mh-card" style="padding:14px 16px;margin-bottom:16px">
-      <div class="toolbar-left">
-        <el-input
-          v-model="query.q"
-          placeholder="按邮箱搜索"
-          clearable
-          style="width: 220px"
-          :prefix-icon="'Search'"
-          @keyup.enter="handleSearch"
-          @clear="handleSearch"
-        />
-        <el-select
-          v-model="query.status"
-          placeholder="状态筛选"
-          style="width: 130px"
-          @change="handleSearch"
-        >
-          <el-option
-            v-for="opt in statusOptions"
-            :key="opt.value"
-            :label="opt.label"
-            :value="opt.value"
-          />
-        </el-select>
-        <el-button type="primary" :icon="'Search'" @click="handleSearch">查询</el-button>
-      </div>
-      <div class="toolbar-right">
-        <el-button type="success" :icon="'Upload'" @click="openImportDialog">导入配置</el-button>
+      <div class="hero-actions">
+        <el-button type="primary" :icon="'Upload'" @click="openImportDialog">导入配置</el-button>
         <el-dropdown split-button type="warning" :loading="batchChecking" @click="handleBatchCheck('page')">
           测活当前页
           <template #dropdown>
@@ -459,82 +495,101 @@ onUnmounted(stopWatchPolling)
             </el-dropdown-menu>
           </template>
         </el-dropdown>
-        <el-button :icon="'Refresh'" @click="loadAccounts">刷新列表</el-button>
       </div>
     </div>
 
-    <!-- 账号表格 -->
-    <el-table v-loading="loading" :data="tableData" border stripe style="width: 100%">
-      <el-table-column type="index" label="#" width="55" align="center" />
-      <el-table-column prop="email" label="邮箱" min-width="220" show-overflow-tooltip />
-      <el-table-column label="状态" width="100" align="center">
-        <template #default="{ row }">
-          <!-- error 状态悬停显示 last_error -->
-          <el-tooltip
-            v-if="row.status === 'error' && row.last_error"
-            :content="row.last_error"
-            placement="top"
-          >
-            <el-tag :type="statusMeta[row.status]?.type || 'info'">
-              {{ statusMeta[row.status]?.text || row.status }}
-            </el-tag>
-          </el-tooltip>
-          <el-tag v-else :type="statusMeta[row.status]?.type || 'info'">
-            {{ statusMeta[row.status]?.text || row.status }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="message_count" label="邮件数" width="90" align="center" />
-      <el-table-column label="启用" width="80" align="center">
-        <template #default="{ row }">
-          <el-tag :type="row.enabled ? 'success' : 'info'" size="small">
-            {{ row.enabled ? '是' : '否' }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="最后轮询时间" width="180" align="center">
-        <template #default="{ row }">{{ formatTime(row.last_polled_at) }}</template>
-      </el-table-column>
-      <el-table-column label="错误信息" min-width="160" show-overflow-tooltip>
-        <template #default="{ row }">
-          <span v-if="row.status === 'error'" class="error-text">{{ row.last_error || '-' }}</span>
-          <span v-else>-</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="500" fixed="right" align="center">
-        <template #default="{ row }">
-          <el-button
-            size="small"
-            type="primary"
-            :loading="isRefreshing(row.id)"
-            @click="handleRefresh(row)"
-          >
-            立即刷新
-          </el-button>
-          <el-button
-            size="small"
-            type="info"
-            :loading="isChecking(row.id)"
-            @click="handleCheck(row)"
-          >
-            测活
-          </el-button>
-          <el-button size="small" type="success" @click="openWatchDialog(row)">监听收码</el-button>
-          <el-button size="small" @click="handleViewMessages(row)">查看邮件</el-button>
-          <el-button size="small" type="warning" @click="handleViewSites(row)">注册网站</el-button>
-          <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+    <div class="toolbar mh-card">
+      <div class="toolbar-left">
+        <el-input
+          v-model="query.q"
+          placeholder="搜索邮箱地址"
+          clearable
+          style="width: 260px"
+          :prefix-icon="'Search'"
+          @keyup.enter="handleSearch"
+          @clear="handleSearch"
+        />
+        <el-select v-model="query.status" placeholder="状态" style="width: 130px" @change="handleSearch">
+          <el-option v-for="opt in statusOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
+        </el-select>
+        <el-button type="primary" :icon="'Search'" @click="handleSearch">查询</el-button>
+      </div>
+      <div class="toolbar-right">
+        <span class="total-tip">共 {{ total }} 个邮箱</span>
+        <el-button :icon="'Refresh'" @click="loadAccounts">刷新</el-button>
+      </div>
+    </div>
 
-    <!-- 分页 -->
+    <div v-loading="loading">
+      <div v-if="tableData.length" class="card-grid">
+        <div v-for="row in tableData" :key="row.id" class="mail-card">
+          <div class="mail-top">
+            <div class="provider" :style="{ background: providerOf(row.email).color }">
+              {{ providerOf(row.email).letter }}
+            </div>
+            <div class="mail-meta">
+              <div class="mail-email" :title="row.email">{{ row.email }}</div>
+              <div class="mail-provider">{{ providerOf(row.email).name }}</div>
+            </div>
+            <span class="status-pill" :class="statusMeta(row.status).cls">
+              {{ statusMeta(row.status).text }}
+            </span>
+          </div>
+
+          <div class="metrics">
+            <div>
+              <div class="m-label">邮件数</div>
+              <div class="m-value">{{ row.message_count || 0 }}</div>
+            </div>
+            <div>
+              <div class="m-label">启用</div>
+              <div class="m-value small">{{ row.enabled ? '是' : '否' }}</div>
+            </div>
+          </div>
+
+          <div class="time-line">
+            <el-icon><Clock /></el-icon>
+            <span>{{ formatTime(row.last_polled_at) }}</span>
+          </div>
+
+          <div v-if="row.status === 'error' && row.last_error" class="err-line" :title="row.last_error">
+            {{ row.last_error }}
+          </div>
+
+          <div class="actions">
+            <el-button size="small" type="primary" :loading="isRefreshing(row.id)" @click="handleRefresh(row)">
+              刷新
+            </el-button>
+            <el-button size="small" :loading="isChecking(row.id)" @click="handleCheck(row)">测活</el-button>
+            <el-button size="small" type="success" @click="openWatchDialog(row)">收码</el-button>
+            <el-dropdown trigger="click">
+              <el-button size="small">
+                更多
+                <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item @click="handleViewMessages(row)">查看邮件</el-dropdown-item>
+                  <el-dropdown-item @click="handleViewSites(row)">注册网站</el-dropdown-item>
+                  <el-dropdown-item divided @click="handleDelete(row)">
+                    <span style="color:#f56c6c">删除账号</span>
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </div>
+        </div>
+      </div>
+      <el-empty v-else description="暂无邮箱，先导入配置吧" />
+    </div>
+
     <div class="pagination">
       <el-pagination
         :current-page="query.page"
         :page-size="query.size"
         :total="total"
-        :page-sizes="[10, 20, 50, 100]"
-        layout="total, sizes, prev, pager, next, jumper"
+        :page-sizes="[12, 24, 48, 96]"
+        layout="total, sizes, prev, pager, next"
         background
         @current-change="handlePageChange"
         @size-change="handleSizeChange"
@@ -545,20 +600,11 @@ onUnmounted(stopWatchPolling)
     <el-dialog v-model="importDialogVisible" title="导入账号配置" width="560px">
       <el-tabs v-model="importTab">
         <el-tab-pane label="上传文件" name="file">
-          <el-upload
-            ref="uploadRef"
-            drag
-            accept=".txt"
-            :auto-upload="false"
-            :limit="1"
-            :on-change="handleFileChange"
-          >
+          <el-upload drag accept=".txt" :auto-upload="false" :limit="1" :on-change="handleFileChange">
             <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
             <div class="el-upload__text">将 .txt 文件拖到此处，或<em>点击选择</em></div>
             <template #tip>
-              <div class="el-upload__tip">
-                仅支持 .txt 文件，每行格式：邮箱----密码----ClientID----RefreshToken
-              </div>
+              <div class="el-upload__tip">每行：邮箱----密码----ClientID----RefreshToken</div>
             </template>
           </el-upload>
         </el-tab-pane>
@@ -577,7 +623,6 @@ onUnmounted(stopWatchPolling)
       </template>
     </el-dialog>
 
-    <!-- 导入结果弹窗 -->
     <el-dialog v-model="resultDialogVisible" title="导入结果" width="560px">
       <template v-if="importResult">
         <el-descriptions :column="2" border>
@@ -586,41 +631,61 @@ onUnmounted(stopWatchPolling)
           <el-descriptions-item label="更新">{{ importResult.updated }}</el-descriptions-item>
           <el-descriptions-item label="跳过">{{ importResult.skipped }}</el-descriptions-item>
         </el-descriptions>
-        <div v-if="importResult.errors && importResult.errors.length" class="error-list">
-          <el-alert
-            :title="`存在 ${importResult.errors.length} 条错误`"
-            type="error"
-            :closable="false"
-            show-icon
-          />
+        <div v-if="importResult.errors?.length" class="error-list">
+          <el-alert :title="`存在 ${importResult.errors.length} 条错误`" type="error" :closable="false" show-icon />
           <ul>
             <li v-for="(err, idx) in importResult.errors" :key="idx">{{ err }}</li>
           </ul>
         </div>
-        <el-alert
-          v-else
-          title="全部处理完成，无错误"
-          type="success"
-          :closable="false"
-          show-icon
-          style="margin-top: 12px"
-        />
+        <el-alert v-else title="全部处理完成，无错误" type="success" :closable="false" show-icon style="margin-top:12px" />
       </template>
       <template #footer>
         <el-button type="primary" @click="resultDialogVisible = false">知道了</el-button>
       </template>
     </el-dialog>
 
-    <!-- 批量测活结果弹窗 -->
+    <!-- 批量测活进度 -->
+    <el-dialog
+      v-model="checkJobVisible"
+      title="批量测活进行中"
+      width="480px"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      :show-close="false"
+    >
+      <div v-if="checkJob" class="job-box">
+        <div class="job-title">
+          {{ checkJob.status === 'running' ? '正在测活，请稍候…' : '处理中…' }}
+        </div>
+        <el-progress
+          :percentage="checkJob.percent || 0"
+          :stroke-width="14"
+          striped
+          striped-flow
+        />
+        <div class="job-meta">
+          <span>进度 {{ checkJob.done || 0 }} / {{ checkJob.total || 0 }}</span>
+          <span>存活 {{ checkJob.alive || 0 }} · 失效 {{ checkJob.dead || 0 }}</span>
+          <span>已用时 {{ checkJob.elapsed_seconds || 0 }}s</span>
+        </div>
+        <div class="job-tip">
+          大批量账号会在后台持续测活。即使页面等待较久，也请勿重复点击；可随时取消。
+        </div>
+      </div>
+      <template #footer>
+        <el-button type="warning" @click="handleCancelCheckJob">取消测活</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="checkResultVisible" title="批量测活结果" width="720px">
       <template v-if="checkResult">
-        <el-descriptions :column="3" border style="margin-bottom: 12px">
+        <el-descriptions :column="3" border style="margin-bottom:12px">
           <el-descriptions-item label="总计">{{ checkResult.total }}</el-descriptions-item>
           <el-descriptions-item label="存活">
-            <span style="color: #67c23a; font-weight: 600">{{ checkResult.alive }}</span>
+            <span style="color:#67c23a;font-weight:700">{{ checkResult.alive }}</span>
           </el-descriptions-item>
           <el-descriptions-item label="失效">
-            <span style="color: #f56c6c; font-weight: 600">{{ checkResult.dead }}</span>
+            <span style="color:#f56c6c;font-weight:700">{{ checkResult.dead }}</span>
           </el-descriptions-item>
         </el-descriptions>
         <el-table :data="checkResult.items || []" border stripe max-height="360" size="small">
@@ -632,15 +697,8 @@ onUnmounted(stopWatchPolling)
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="阶段" width="90" align="center">
-            <template #default="{ row }">{{ row.stage || '-' }}</template>
-          </el-table-column>
-          <el-table-column prop="error" label="错误信息" min-width="220" show-overflow-tooltip>
-            <template #default="{ row }">
-              <span v-if="row.error" class="error-text">{{ row.error }}</span>
-              <span v-else>-</span>
-            </template>
-          </el-table-column>
+          <el-table-column prop="stage" label="阶段" width="90" align="center" />
+          <el-table-column prop="error" label="错误信息" min-width="220" show-overflow-tooltip />
         </el-table>
       </template>
       <template #footer>
@@ -648,15 +706,8 @@ onUnmounted(stopWatchPolling)
       </template>
     </el-dialog>
 
-    <!-- 临时监听收码弹窗 -->
-    <el-dialog
-      v-model="watchDialogVisible"
-      :title="`监听收码 - ${watchEmail}`"
-      width="460px"
-      @close="onWatchClosed"
-    >
+    <el-dialog v-model="watchDialogVisible" :title="`监听收码 - ${watchEmail}`" width="460px" @close="onWatchClosed">
       <div class="watch-box">
-        <!-- 已捕获验证码 -->
         <div v-if="watchState.code" class="watch-code-area">
           <div class="watch-label">已捕获验证码</div>
           <div class="watch-code">{{ watchState.code }}</div>
@@ -664,8 +715,6 @@ onUnmounted(stopWatchPolling)
           <div v-if="watchState.subject" class="watch-sub">邮件主题：{{ watchState.subject }}</div>
           <div v-if="watchState.from" class="watch-sub">发件人：{{ watchState.from }}</div>
         </div>
-
-        <!-- 监听中 -->
         <div v-else-if="watchState.active" class="watch-waiting">
           <el-icon class="is-loading watch-spin" :size="30"><Loading /></el-icon>
           <div class="watch-tip">正在监听新邮件，请到对应网站触发发送验证码…</div>
@@ -674,15 +723,13 @@ onUnmounted(stopWatchPolling)
             :percentage="watchState.maxRemaining ? Math.round(watchState.remaining / watchState.maxRemaining * 100) : 0"
             :show-text="false"
             :stroke-width="6"
-            style="width: 100%; margin-top: 12px"
+            style="width:100%;margin-top:12px"
           />
         </div>
-
-        <!-- 结束且无码 -->
         <div v-else class="watch-ended">
           <div v-if="watchState.lastError" class="error-text">监听中账号报错：{{ watchState.lastError }}</div>
           <div v-else class="watch-tip">本次监听结束，未收到新验证码</div>
-          <el-button type="success" style="margin-top: 12px" @click="restartWatch">重新监听</el-button>
+          <el-button type="success" style="margin-top:12px" @click="restartWatch">重新监听</el-button>
         </div>
       </div>
       <template #footer>
@@ -691,7 +738,6 @@ onUnmounted(stopWatchPolling)
       </template>
     </el-dialog>
 
-    <!-- 注册网站弹窗 -->
     <el-dialog v-model="sitesDialogVisible" :title="`注册网站 - ${currentEmail}`" width="680px">
       <el-table v-loading="sitesLoading" :data="sitesData" border stripe empty-text="暂无注册记录">
         <el-table-column prop="site_name" label="站点名" min-width="140" show-overflow-tooltip />
@@ -712,17 +758,28 @@ onUnmounted(stopWatchPolling)
 </template>
 
 <style scoped>
-.hero-row {
-  margin-bottom: 8px;
+.hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .toolbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 16px;
+  gap: 12px;
   flex-wrap: wrap;
-  gap: 10px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
 }
 
 .toolbar-left,
@@ -733,20 +790,138 @@ onUnmounted(stopWatchPolling)
   flex-wrap: wrap;
 }
 
+.total-tip {
+  color: #98a2b3;
+  font-size: 13px;
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.mail-card {
+  background: #fff;
+  border-radius: 22px;
+  padding: 18px;
+  border: 1px solid rgba(232, 237, 245, 0.95);
+  box-shadow: var(--mh-shadow);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.mail-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 36px rgba(31, 42, 68, 0.08);
+}
+
+.mail-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.provider {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+
+.mail-meta {
+  min-width: 0;
+  flex: 1;
+}
+
+.mail-email {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1f2a44;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mail-provider {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #98a2b3;
+}
+
+.status-pill {
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 4px 10px;
+  flex-shrink: 0;
+}
+
+.status-pill.ok { background: #eef2ff; color: #4f6ef7; }
+.status-pill.err { background: #fff1f2; color: #e11d48; }
+.status-pill.pending { background: #f3f4f6; color: #6b7280; }
+
+.metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 16px 0 12px;
+}
+
+.m-label {
+  font-size: 12px;
+  color: #98a2b3;
+  margin-bottom: 6px;
+}
+
+.m-value {
+  font-size: 28px;
+  font-weight: 800;
+  color: #1f2a44;
+  letter-spacing: -0.03em;
+}
+
+.m-value.small {
+  font-size: 18px;
+  padding-top: 8px;
+}
+
+.time-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #98a2b3;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.err-line {
+  color: #f56c6c;
+  font-size: 12px;
+  margin-bottom: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 .pagination {
-  margin-top: 16px;
+  margin-top: 18px;
   display: flex;
   justify-content: flex-end;
 }
 
-.error-text {
-  color: #f56c6c;
-}
-
-.error-list {
-  margin-top: 12px;
-}
-
+.error-text { color: #f56c6c; }
+.error-list { margin-top: 12px; }
 .error-list ul {
   max-height: 200px;
   overflow-y: auto;
@@ -755,7 +930,6 @@ onUnmounted(stopWatchPolling)
   font-size: 13px;
 }
 
-/* 临时监听弹窗 */
 .watch-box {
   min-height: 150px;
   display: flex;
@@ -775,38 +949,54 @@ onUnmounted(stopWatchPolling)
   width: 100%;
 }
 
-.watch-label {
-  color: #909399;
-  font-size: 13px;
-}
-
+.watch-label { color: #909399; font-size: 13px; }
 .watch-code {
   font-size: 40px;
   font-weight: 700;
   letter-spacing: 6px;
   color: #f56c6c;
-  font-family: 'Consolas', 'Monaco', monospace;
-  margin-bottom: 4px;
+  font-family: Consolas, Monaco, monospace;
+}
+.watch-sub { color: #909399; font-size: 12px; max-width: 400px; word-break: break-all; }
+.watch-tip { color: #606266; font-size: 14px; }
+.watch-meta { color: #909399; font-size: 13px; }
+.watch-spin { color: #409eff; }
+
+.job-box {
+  padding: 8px 4px 4px;
 }
 
-.watch-sub {
-  color: #909399;
-  font-size: 12px;
-  max-width: 400px;
-  word-break: break-all;
+.job-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #1f2a44;
+  margin-bottom: 14px;
 }
 
-.watch-tip {
-  color: #606266;
-  font-size: 14px;
-}
-
-.watch-meta {
-  color: #909399;
+.job-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
+  color: #667085;
   font-size: 13px;
 }
 
-.watch-spin {
-  color: #409eff;
+.job-tip {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #eef2ff;
+  color: #4f6ef7;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 1200px) {
+  .card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .card-grid { grid-template-columns: 1fr; }
+  .hero { flex-direction: column; }
 }
 </style>

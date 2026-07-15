@@ -11,6 +11,7 @@ from ..services import poller
 from ..services.watch import manager as watch_manager
 from ..services.poller_import import import_accounts
 from ..services import check_alive
+from ..services.check_job import manager as check_job_manager
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"], dependencies=[Depends(require_auth)])
 
@@ -160,14 +161,43 @@ async def check_account(account_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.post("/check-batch")
 async def check_accounts_batch(body: CheckAliveBatchRequest, db: AsyncSession = Depends(get_db)):
-    """批量测活。account_ids 为空时测全部启用账号。"""
+    """批量测活（异步任务）。
+
+    立即返回 job_id，前端轮询 /check-jobs/{job_id} 获取进度。
+    避免「测全部账号」时 HTTP 长时间阻塞导致浏览器/axios 超时误报。
+    account_ids 为空时测全部启用账号。
+    """
     if body.account_ids:
         ids = body.account_ids
     else:
         ids = await check_alive.list_enabled_account_ids(db, only_enabled=True)
-    if not ids:
-        return {"total": 0, "alive": 0, "dead": 0, "items": []}
-    return await check_alive.check_batch(ids)
+    job = await check_job_manager.start(ids)
+    # 启动接口不返回全量 items，减小首包
+    data = job.to_dict(include_items=False)
+    return data
+
+
+@router.get("/check-jobs/{job_id}")
+async def get_check_job(job_id: str, include_items: bool = True):
+    """查询批量测活任务进度。"""
+    job = check_job_manager.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="测活任务不存在或已过期")
+    # 运行中可不回全量 items，减少带宽；结束后默认带回
+    if job.status == "running" and include_items:
+        # 运行中也返回已完成的部分结果，方便实时展示
+        return job.to_dict(include_items=True)
+    return job.to_dict(include_items=include_items)
+
+
+@router.post("/check-jobs/{job_id}/cancel")
+async def cancel_check_job(job_id: str):
+    """取消批量测活任务。"""
+    job = check_job_manager.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="测活任务不存在或已过期")
+    check_job_manager.cancel(job_id)
+    return job.to_dict(include_items=False)
 
 
 @router.post("/{account_id}/watch/start")

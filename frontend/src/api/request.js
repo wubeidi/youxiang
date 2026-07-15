@@ -4,9 +4,10 @@ import router from '../router'
 
 // 创建 axios 实例
 // baseURL 使用 /api，开发环境由 Vite 代理到后端
+// 默认 60s：单账号刷新/测活可能较慢；批量长任务已改为后台 job + 轮询
 const request = axios.create({
   baseURL: '/api',
-  timeout: 30000
+  timeout: 60000
 })
 
 // 请求拦截器：自动为每个请求添加 Bearer 认证头
@@ -45,8 +46,10 @@ request.interceptors.response.use(
           response.data?.detail || response.data?.message || `请求失败（${response.status}）`
         ElMessage.error(typeof msg === 'string' ? msg : '请求失败')
       }
+    } else if (error.code === 'ECONNABORTED' || String(error.message || '').includes('timeout')) {
+      ElMessage.error('请求超时。若正在批量测活，请改用任务进度面板，勿重复点击')
     } else {
-      // 网络异常或超时
+      // 网络异常
       ElMessage.error('网络异常，请检查后端服务是否启动')
     }
     return Promise.reject(error)

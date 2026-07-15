@@ -48,10 +48,29 @@ export function checkAccount(id) {
   return request.post(`/accounts/${id}/check`)
 }
 
-// 批量测活：传 ids 测指定账号；不传 / 传空数组则测全部启用账号
+// 批量测活（异步任务）：立即返回 job_id，需轮询 getCheckJob
+// 传 ids 测指定账号；不传 / 传空数组则测全部启用账号
 export function checkAccountsBatch(accountIds) {
   return request.post('/accounts/check-batch', {
     account_ids: accountIds && accountIds.length ? accountIds : null
+  }, {
+    // 启动任务本身很快；真正测活在后台跑
+    timeout: 60000
+  })
+}
+
+// 查询批量测活任务进度
+export function getCheckJob(jobId) {
+  return request.get(`/accounts/check-jobs/${jobId}`, {
+    // 轮询接口应快速返回
+    timeout: 15000
+  })
+}
+
+// 取消批量测活任务
+export function cancelCheckJob(jobId) {
+  return request.post(`/accounts/check-jobs/${jobId}/cancel`, null, {
+    timeout: 15000
   })
 }
 

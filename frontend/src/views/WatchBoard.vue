@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   getAccounts,
@@ -11,10 +11,22 @@ import {
   stopWatch
 } from '../api'
 
-// ========== 账号选择（远程搜索，支持上千账号）==========
 const selectedIds = ref([])
 const accountOptions = ref([])
 const selectLoading = ref(false)
+const boards = ref([])
+const starting = ref(false)
+let boardTimer = null
+
+const summary = computed(() => {
+  const list = boards.value || []
+  return {
+    total: list.length,
+    active: list.filter((b) => b.active).length,
+    coded: list.filter((b) => b.latest_code).length,
+    error: list.filter((b) => !b.active && b.last_error).length
+  }
+})
 
 async function remoteSearch(q) {
   if (!q) {
@@ -32,21 +44,14 @@ async function remoteSearch(q) {
   }
 }
 
-// ========== 看板数据 ==========
-const boards = ref([])
-const starting = ref(false)
-let boardTimer = null
-
-// 拉取所有监听状态
 async function refreshBoards() {
   try {
     boards.value = await getActiveWatches()
   } catch (e) {
-    // 静默：轮询失败不打扰
+    // 静默
   }
 }
 
-// 每 2.5 秒轮询一次看板
 function startBoardPolling() {
   stopBoardPolling()
   boardTimer = setInterval(refreshBoards, 2500)
@@ -59,7 +64,6 @@ function stopBoardPolling() {
   }
 }
 
-// 批量开始监听选中的账号
 async function startSelected() {
   if (!selectedIds.value.length) {
     ElMessage.warning('请先选择要监听的账号')
@@ -85,7 +89,6 @@ async function startSelected() {
   }
 }
 
-// 单个操作
 async function stopOne(b) {
   try {
     await stopWatch(b.account_id)
@@ -100,7 +103,6 @@ async function restartOne(b) {
   } catch (e) { /* 忽略 */ }
 }
 
-// 全局操作
 async function handleStopAll() {
   try {
     const res = await stopAllWatches()
@@ -117,12 +119,11 @@ async function handleClearFinished() {
   } catch (e) { /* 忽略 */ }
 }
 
-// ========== 展示辅助 ==========
 function cardStatus(b) {
-  if (b.latest_code) return { type: 'success', text: '已收到验证码', cls: 'is-code' }
-  if (b.active) return { type: 'primary', text: '监听中', cls: 'is-active' }
-  if (b.last_error) return { type: 'danger', text: '账号报错', cls: 'is-error' }
-  return { type: 'info', text: '已结束', cls: 'is-ended' }
+  if (b.latest_code) return { text: '已收到验证码', cls: 'is-code' }
+  if (b.active) return { text: '监听中', cls: 'is-active' }
+  if (b.last_error) return { text: '账号报错', cls: 'is-error' }
+  return { text: '已结束', cls: 'is-ended' }
 }
 
 function progressPercent(b) {
@@ -130,9 +131,22 @@ function progressPercent(b) {
   return Math.round((b.remaining_seconds / b.duration) * 100)
 }
 
+function providerLetter(email = '') {
+  return (email[0] || 'M').toUpperCase()
+}
+
+function providerColor(email = '') {
+  const e = email.toLowerCase()
+  if (e.includes('gmail')) return '#ea4335'
+  if (e.includes('outlook') || e.includes('hotmail') || e.includes('live.')) return '#0078d4'
+  if (e.includes('yahoo')) return '#6001d2'
+  if (e.includes('icloud') || e.includes('me.com')) return '#3b82f6'
+  return '#4f6ef7'
+}
+
 function copyCode(code) {
   if (!code) return
-  if (navigator.clipboard && navigator.clipboard.writeText) {
+  if (navigator.clipboard?.writeText) {
     navigator.clipboard.writeText(code).then(() => ElMessage.success('验证码已复制'))
   } else {
     const ta = document.createElement('textarea')
@@ -154,12 +168,33 @@ onUnmounted(stopBoardPolling)
 
 <template>
   <div class="page-shell">
-    <div style="margin-bottom:8px">
-      <h2 class="page-title" style="font-size:24px">监听看板</h2>
-      <p class="page-subtitle">同时监听多个邮箱，验证码到账即时展示</p>
+    <div class="hero">
+      <div>
+        <h2 class="page-title" style="font-size:24px">监听看板</h2>
+        <p class="page-subtitle">同时监听多个邮箱，验证码到账即时展示</p>
+      </div>
     </div>
-    <!-- 工具栏 -->
-    <div class="toolbar mh-card" style="padding:14px 16px;margin-bottom:16px">
+
+    <div class="summary-grid">
+      <div class="sum-card">
+        <div class="sum-label">监听中</div>
+        <div class="sum-value blue">{{ summary.active }}</div>
+      </div>
+      <div class="sum-card">
+        <div class="sum-label">已收到验证码</div>
+        <div class="sum-value green">{{ summary.coded }}</div>
+      </div>
+      <div class="sum-card">
+        <div class="sum-label">异常结束</div>
+        <div class="sum-value red">{{ summary.error }}</div>
+      </div>
+      <div class="sum-card">
+        <div class="sum-label">看板条目</div>
+        <div class="sum-value">{{ summary.total }}</div>
+      </div>
+    </div>
+
+    <div class="toolbar mh-card">
       <div class="toolbar-left">
         <el-select
           v-model="selectedIds"
@@ -192,75 +227,104 @@ onUnmounted(stopBoardPolling)
       </div>
     </div>
 
-    <!-- 说明 -->
-    <el-alert
-      type="info"
-      :closable="false"
-      show-icon
-      style="margin-bottom: 16px"
-      title="使用说明"
-    >
-      搜索并选中要等验证码的账号，点「开始监听」。系统会同时对这些账号短时快拉，收到验证码即在对应卡片高亮显示、可一键复制。拿到码或超时会自动停止，不影响其他账号。
-    </el-alert>
+    <div class="tip-card">
+      搜索并选中要等验证码的账号，点「开始监听」。系统会短时快拉这些账号，收到验证码后卡片高亮并可一键复制；超时或拿到码会自动停止，不影响其他账号。
+    </div>
 
-    <!-- 看板卡片 -->
     <el-empty v-if="!boards.length" description="暂无监听中的账号，从上方选择账号开始" />
-    <el-row v-else :gutter="16">
-      <el-col
+    <div v-else class="watch-grid">
+      <div
         v-for="b in boards"
         :key="b.account_id"
-        :xs="24" :sm="12" :md="8" :lg="6"
-        style="margin-bottom: 16px"
+        class="watch-card"
+        :class="cardStatus(b).cls"
       >
-        <el-card shadow="hover" :class="['watch-card', cardStatus(b).cls]" body-style="padding: 16px">
-          <!-- 卡片头：邮箱 + 状态 -->
-          <div class="card-head">
-            <span class="card-email" :title="b.email">{{ b.email }}</span>
-            <el-tag :type="cardStatus(b).type" size="small" effect="dark">{{ cardStatus(b).text }}</el-tag>
+        <div class="card-head">
+          <div class="provider" :style="{ background: providerColor(b.email) }">
+            {{ providerLetter(b.email) }}
           </div>
+          <div class="head-meta">
+            <div class="card-email" :title="b.email">{{ b.email || `账号 #${b.account_id}` }}</div>
+            <div class="card-status">{{ cardStatus(b).text }}</div>
+          </div>
+        </div>
 
-          <!-- 已收到验证码 -->
-          <div v-if="b.latest_code" class="card-body">
-            <div class="code-big">{{ b.latest_code }}</div>
-            <el-button type="primary" size="small" @click="copyCode(b.latest_code)">复制验证码</el-button>
-            <div v-if="b.latest_subject" class="card-sub" :title="b.latest_subject">{{ b.latest_subject }}</div>
-          </div>
+        <div v-if="b.latest_code" class="card-body">
+          <div class="code-big">{{ b.latest_code }}</div>
+          <el-button type="primary" size="small" @click="copyCode(b.latest_code)">复制验证码</el-button>
+          <div v-if="b.latest_subject" class="card-sub" :title="b.latest_subject">{{ b.latest_subject }}</div>
+        </div>
 
-          <!-- 监听中 -->
-          <div v-else-if="b.active" class="card-body">
-            <div class="waiting-tip">
-              <el-icon class="is-loading"><Loading /></el-icon>
-              等待验证码…
-            </div>
-            <div class="card-meta">剩余 {{ b.remaining_seconds }}s · 已检查 {{ b.poll_count }} 次</div>
-            <el-progress :percentage="progressPercent(b)" :show-text="false" :stroke-width="5" />
+        <div v-else-if="b.active" class="card-body">
+          <div class="waiting-tip">
+            <el-icon class="is-loading"><Loading /></el-icon>
+            等待验证码…
           </div>
+          <div class="card-meta">剩余 {{ b.remaining_seconds }}s · 已检查 {{ b.poll_count }} 次</div>
+          <div class="progress-bar">
+            <div class="progress-fill" :style="{ width: `${progressPercent(b)}%` }" />
+          </div>
+        </div>
 
-          <!-- 结束/报错 -->
-          <div v-else class="card-body">
-            <div v-if="b.last_error" class="card-error" :title="b.last_error">报错：{{ b.last_error }}</div>
-            <div v-else class="card-meta">本次未收到验证码</div>
-          </div>
+        <div v-else class="card-body">
+          <div v-if="b.last_error" class="card-error" :title="b.last_error">报错：{{ b.last_error }}</div>
+          <div v-else class="card-meta">本次未收到验证码</div>
+        </div>
 
-          <!-- 卡片底操作 -->
-          <div class="card-foot">
-            <el-button v-if="b.active" size="small" type="warning" plain @click="stopOne(b)">停止</el-button>
-            <el-button v-else size="small" type="success" plain @click="restartOne(b)">重新监听</el-button>
-          </div>
-        </el-card>
-      </el-col>
-    </el-row>
+        <div class="card-foot">
+          <el-button v-if="b.active" size="small" type="warning" plain @click="stopOne(b)">停止</el-button>
+          <el-button v-else size="small" type="success" plain @click="restartOne(b)">重新监听</el-button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
+.hero {
+  margin-bottom: 16px;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.sum-card {
+  background: #fff;
+  border-radius: 18px;
+  padding: 16px;
+  border: 1px solid rgba(232, 237, 245, 0.95);
+  box-shadow: var(--mh-shadow);
+}
+
+.sum-label {
+  color: #98a2b3;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.sum-value {
+  font-size: 28px;
+  font-weight: 800;
+  color: #1f2a44;
+  letter-spacing: -0.03em;
+}
+
+.sum-value.blue { color: #4f6ef7; }
+.sum-value.green { color: #16a34a; }
+.sum-value.red { color: #e11d48; }
+
 .toolbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 16px;
+  gap: 12px;
   flex-wrap: wrap;
-  gap: 10px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
 }
 
 .toolbar-left,
@@ -271,73 +335,112 @@ onUnmounted(stopBoardPolling)
   flex-wrap: wrap;
 }
 
+.tip-card {
+  background: #eef2ff;
+  color: #4f6ef7;
+  border-radius: 14px;
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+
+.watch-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
 .watch-card {
-  transition: border-color 0.2s;
+  background: #fff;
+  border-radius: 22px;
+  padding: 16px;
+  border: 1px solid rgba(232, 237, 245, 0.95);
+  box-shadow: var(--mh-shadow);
   border-top: 3px solid transparent;
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
 }
 
-.watch-card.is-code {
-  border-top-color: #67c23a;
-}
-
-.watch-card.is-active {
-  border-top-color: #409eff;
-}
-
-.watch-card.is-error {
-  border-top-color: #f56c6c;
-}
+.watch-card.is-code { border-top-color: #22c55e; }
+.watch-card.is-active { border-top-color: #4f6ef7; }
+.watch-card.is-error { border-top-color: #f56c6c; }
+.watch-card.is-ended { border-top-color: #cbd5e1; }
 
 .card-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
   margin-bottom: 12px;
+}
+
+.provider {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+
+.head-meta {
+  min-width: 0;
+  flex: 1;
 }
 
 .card-email {
   font-size: 13px;
-  font-weight: 600;
-  color: #303133;
+  font-weight: 700;
+  color: #1f2a44;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.card-status {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #98a2b3;
+}
+
 .card-body {
-  min-height: 92px;
+  min-height: 110px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 8px;
   text-align: center;
+  flex: 1;
 }
 
 .code-big {
-  font-size: 30px;
-  font-weight: 700;
+  font-size: 32px;
+  font-weight: 800;
   letter-spacing: 4px;
-  color: #67c23a;
-  font-family: 'Consolas', 'Monaco', monospace;
+  color: #16a34a;
+  font-family: Consolas, Monaco, monospace;
 }
 
 .waiting-tip {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: #409eff;
+  color: #4f6ef7;
   font-size: 14px;
+  font-weight: 600;
 }
 
 .card-meta {
-  color: #909399;
+  color: #98a2b3;
   font-size: 12px;
 }
 
 .card-sub {
-  color: #909399;
+  color: #98a2b3;
   font-size: 12px;
   max-width: 100%;
   white-space: nowrap;
@@ -349,20 +452,38 @@ onUnmounted(stopBoardPolling)
   color: #f56c6c;
   font-size: 12px;
   max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: #eef2f7;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #4f6ef7, #7a5af8);
 }
 
 .card-foot {
-  margin-top: 12px;
+  margin-top: 10px;
   display: flex;
   justify-content: center;
 }
 
-.card-body .el-progress {
-  width: 100%;
+@media (max-width: 1200px) {
+  .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .watch-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .summary-grid,
+  .watch-grid { grid-template-columns: 1fr; }
 }
 </style>
