@@ -414,9 +414,15 @@ onUnmounted(stopWatchPolling)
 </script>
 
 <template>
-  <div>
+  <div class="page-shell">
+    <div class="hero-row">
+      <div>
+        <h2 class="page-title" style="font-size:24px">邮箱管理</h2>
+        <p class="page-subtitle">导入配置、测活、刷新与监听收码</p>
+      </div>
+    </div>
     <!-- 工具栏 -->
-    <div class="toolbar">
+    <div class="toolbar mh-card" style="padding:14px 16px;margin-bottom:16px">
       <div class="toolbar-left">
         <el-input
           v-model="query.q"
@@ -706,6 +712,10 @@ onUnmounted(stopWatchPolling)
 </template>
 
 <style scoped>
+.hero-row {
+  margin-bottom: 8px;
+}
+
 .toolbar {
   display: flex;
   justify-content: space-between;

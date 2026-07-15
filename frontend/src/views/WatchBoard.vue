@@ -153,9 +153,13 @@ onUnmounted(stopBoardPolling)
 </script>
 
 <template>
-  <div>
+  <div class="page-shell">
+    <div style="margin-bottom:8px">
+      <h2 class="page-title" style="font-size:24px">监听看板</h2>
+      <p class="page-subtitle">同时监听多个邮箱，验证码到账即时展示</p>
+    </div>
     <!-- 工具栏 -->
-    <div class="toolbar">
+    <div class="toolbar mh-card" style="padding:14px 16px;margin-bottom:16px">
       <div class="toolbar-left">
         <el-select
           v-model="selectedIds"

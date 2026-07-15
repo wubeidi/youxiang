@@ -58,16 +58,72 @@ async def list_accounts(
 
 @router.get("/stats")
 async def stats(db: AsyncSession = Depends(get_db)):
-    """概览统计：总账号、各状态数量、总邮件数。"""
+    """概览统计：总账号、状态分布、邮件/未读/今日收件、账号邮件分布。"""
+    from datetime import datetime, timezone, timedelta
+    from ..models import Message
+
     total = (await db.execute(select(func.count(EmailAccount.id)))).scalar_one()
     by_status = (await db.execute(
         select(EmailAccount.status, func.count(EmailAccount.id)).group_by(EmailAccount.status)
     )).all()
     total_msgs = (await db.execute(select(func.sum(EmailAccount.message_count)))).scalar_one() or 0
+
+    unread = (await db.execute(
+        select(func.count(Message.id)).where(Message.is_read == False)  # noqa: E712
+    )).scalar_one()
+    with_code = (await db.execute(
+        select(func.count(Message.id)).where(Message.verification_code.is_not(None))
+    )).scalar_one()
+
+    # 今日（UTC）新入库邮件
+    now = datetime.now(timezone.utc)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_msgs = (await db.execute(
+        select(func.count(Message.id)).where(Message.created_at >= day_start)
+    )).scalar_one()
+
+    # 近 7 天每日入库量（用于折线图）
+    week_start = day_start - timedelta(days=6)
+    daily_rows = (await db.execute(
+        select(
+            func.date_trunc("day", Message.created_at).label("day"),
+            func.count(Message.id),
+        )
+        .where(Message.created_at >= week_start)
+        .group_by("day")
+        .order_by("day")
+    )).all()
+    day_map = {}
+    for d, c in daily_rows:
+        if d is None:
+            continue
+        key = d.date().isoformat() if hasattr(d, "date") else str(d)[:10]
+        day_map[key] = int(c)
+    daily_series = []
+    for i in range(7):
+        day = (week_start + timedelta(days=i)).date()
+        daily_series.append({"date": day.isoformat(), "count": day_map.get(day.isoformat(), 0)})
+
+    # 账号邮件分布（Top 8，用于环形图）
+    top_accounts = (await db.execute(
+        select(EmailAccount.email, EmailAccount.message_count, EmailAccount.status)
+        .order_by(EmailAccount.message_count.desc(), EmailAccount.id.desc())
+        .limit(8)
+    )).all()
+    distribution = [
+        {"email": e, "message_count": int(c or 0), "status": s}
+        for e, c, s in top_accounts
+    ]
+
     return {
         "total_accounts": total,
         "by_status": {s: c for s, c in by_status},
         "total_messages": int(total_msgs),
+        "unread_messages": int(unread),
+        "today_messages": int(today_msgs),
+        "code_messages": int(with_code),
+        "daily_series": daily_series,
+        "distribution": distribution,
     }
 
 

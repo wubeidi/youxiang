@@ -126,9 +126,13 @@ onMounted(() => {
 </script>
 
 <template>
-  <div>
+  <div class="page-shell">
+    <div style="margin-bottom:8px">
+      <h2 class="page-title" style="font-size:24px">邮件聚合</h2>
+      <p class="page-subtitle">跨邮箱查看邮件与验证码</p>
+    </div>
     <!-- 工具栏 -->
-    <div class="toolbar">
+    <div class="toolbar mh-card" style="padding:14px 16px;margin-bottom:16px">
       <div class="toolbar-left">
         <el-select
           v-model="query.account_id"

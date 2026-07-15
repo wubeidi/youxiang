@@ -9,13 +9,11 @@ const router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()
 
-// 登录表单数据
 const loginForm = reactive({
   username: '',
   password: ''
 })
 
-// 表单校验规则
 const rules = {
   username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
   password: [{ required: true, message: '请输入密码', trigger: 'blur' }]
@@ -24,10 +22,8 @@ const rules = {
 const formRef = ref(null)
 const loading = ref(false)
 
-// 提交登录
 async function handleLogin() {
   if (!formRef.value) return
-  // 先做表单校验
   await formRef.value.validate(async (valid) => {
     if (!valid) return
     loading.value = true
@@ -36,14 +32,12 @@ async function handleLogin() {
         username: loginForm.username,
         password: loginForm.password
       })
-      // 保存 token
       authStore.setToken(res.access_token)
       ElMessage.success('登录成功')
-      // 跳转到重定向地址或主面板
       const redirect = route.query.redirect || '/'
       router.push(redirect)
     } catch (e) {
-      // 错误信息已由 axios 拦截器统一提示
+      // 拦截器已提示
     } finally {
       loading.value = false
     }
@@ -53,84 +47,184 @@ async function handleLogin() {
 
 <template>
   <div class="login-page">
-    <el-card class="login-card" shadow="always">
-      <div class="login-header">
-        <el-icon :size="40" color="#409eff"><Message /></el-icon>
-        <h2>邮箱管理面板</h2>
-        <p class="subtitle">请登录以继续</p>
+    <div class="login-left">
+      <div class="brand">
+        <div class="brand-mark"><el-icon :size="20"><Message /></el-icon></div>
+        <span>MailHub</span>
       </div>
+      <h1>统一管理多个邮箱<br />高效处理验证码与邮件</h1>
+      <p>按需刷新 · 临时监听 · 测活 · 注册网站分析</p>
+      <div class="preview-cards">
+        <div class="mini-card">
+          <div class="mini-label">邮箱总数</div>
+          <div class="mini-value">N+</div>
+        </div>
+        <div class="mini-card">
+          <div class="mini-label">监听收码</div>
+          <div class="mini-value">实时</div>
+        </div>
+        <div class="mini-card">
+          <div class="mini-label">自托管</div>
+          <div class="mini-value">安全</div>
+        </div>
+      </div>
+    </div>
 
-      <el-form
-        ref="formRef"
-        :model="loginForm"
-        :rules="rules"
-        label-position="top"
-        size="large"
-        @keyup.enter="handleLogin"
-      >
-        <el-form-item label="用户名" prop="username">
-          <el-input
-            v-model="loginForm.username"
-            placeholder="请输入用户名"
-            :prefix-icon="'User'"
-            clearable
-          />
-        </el-form-item>
-        <el-form-item label="密码" prop="password">
-          <el-input
-            v-model="loginForm.password"
-            type="password"
-            placeholder="请输入密码"
-            :prefix-icon="'Lock'"
-            show-password
-          />
-        </el-form-item>
-        <el-form-item>
-          <el-button
-            type="primary"
-            class="login-btn"
-            :loading="loading"
-            @click="handleLogin"
-          >
+    <div class="login-right">
+      <div class="login-card">
+        <h2>欢迎回来</h2>
+        <p class="sub">登录以继续使用 MailHub</p>
+        <el-form
+          ref="formRef"
+          :model="loginForm"
+          :rules="rules"
+          label-position="top"
+          size="large"
+          @keyup.enter="handleLogin"
+        >
+          <el-form-item label="用户名" prop="username">
+            <el-input
+              v-model="loginForm.username"
+              placeholder="请输入用户名"
+              :prefix-icon="'User'"
+              clearable
+            />
+          </el-form-item>
+          <el-form-item label="密码" prop="password">
+            <el-input
+              v-model="loginForm.password"
+              type="password"
+              placeholder="请输入密码"
+              :prefix-icon="'Lock'"
+              show-password
+            />
+          </el-form-item>
+          <el-button type="primary" class="login-btn" :loading="loading" @click="handleLogin">
             登 录
           </el-button>
-        </el-form-item>
-      </el-form>
-    </el-card>
+        </el-form>
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .login-page {
-  height: 100vh;
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  background:
+    radial-gradient(circle at 20% 20%, rgba(79, 110, 247, 0.18), transparent 28%),
+    linear-gradient(135deg, #0b1220 0%, #172033 45%, #eef3fb 45%, #f7f9fc 100%);
+}
+
+.login-left {
+  color: #fff;
+  padding: 56px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.brand {
   display: flex;
   align-items: center;
-  justify-content: center;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  gap: 12px;
+  font-size: 22px;
+  font-weight: 800;
+  margin-bottom: 36px;
+}
+
+.brand-mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, #5b7cfa, #7a5af8);
+}
+
+.login-left h1 {
+  margin: 0;
+  font-size: 40px;
+  line-height: 1.25;
+  letter-spacing: -0.03em;
+}
+
+.login-left p {
+  margin: 16px 0 28px;
+  color: #b7c0d1;
+  font-size: 15px;
+}
+
+.preview-cards {
+  display: flex;
+  gap: 12px;
+}
+
+.mini-card {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  padding: 14px 16px;
+  min-width: 100px;
+}
+
+.mini-label {
+  color: #9aa6bc;
+  font-size: 12px;
+}
+
+.mini-value {
+  margin-top: 8px;
+  font-size: 22px;
+  font-weight: 800;
+}
+
+.login-right {
+  display: grid;
+  place-items: center;
+  padding: 32px;
 }
 
 .login-card {
-  width: 400px;
-  border-radius: 10px;
+  width: min(420px, 100%);
+  background: #fff;
+  border-radius: 24px;
+  padding: 32px;
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.12);
 }
 
-.login-header {
-  text-align: center;
-  margin-bottom: 24px;
-}
-
-.login-header h2 {
-  margin: 12px 0 4px;
-  color: #303133;
-}
-
-.subtitle {
-  color: #909399;
-  font-size: 14px;
+.login-card h2 {
   margin: 0;
+  font-size: 28px;
+  letter-spacing: -0.03em;
+}
+
+.sub {
+  margin: 8px 0 24px;
+  color: #8b95a7;
 }
 
 .login-btn {
   width: 100%;
+  height: 44px;
+  margin-top: 8px;
+}
+
+@media (max-width: 900px) {
+  .login-page {
+    grid-template-columns: 1fr;
+    background: linear-gradient(180deg, #0b1220 0%, #172033 36%, #eef3fb 36%, #f7f9fc 100%);
+  }
+  .login-left {
+    padding: 32px 24px 8px;
+  }
+  .login-left h1 {
+    font-size: 28px;
+  }
+  .preview-cards {
+    display: none;
+  }
 }
 </style>
