@@ -1,0 +1,59 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: mail_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mailadmin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mailadmin}
+      POSTGRES_DB: maildb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mailadmin -d maildb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # 默认不对外暴露数据库端口，仅容器内网访问；需本地连库调试再放开
+    # ports:
+    #   - "5432:5432"
+
+  backend:
+    build: ./backend
+    container_name: mail_backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://mailadmin:${POSTGRES_PASSWORD:-mailadmin}@db:5432/maildb
+      MASTER_KEY: ${MASTER_KEY}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
+      JWT_SECRET: ${JWT_SECRET:-please-change-this-jwt-secret}
+      OAUTH_TOKEN_URL: ${OAUTH_TOKEN_URL:-https://login.microsoftonline.com/consumers/oauth2/v2.0/token}
+      OAUTH_SCOPE: ${OAUTH_SCOPE:-https://outlook.office.com/IMAP.AccessAsUser.All offline_access}
+      IMAP_HOST: ${IMAP_HOST:-outlook.office365.com}
+      IMAP_PORT: ${IMAP_PORT:-993}
+      POLL_ENABLED: ${POLL_ENABLED:-false}
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-300}
+      POLL_CONCURRENCY: ${POLL_CONCURRENCY:-30}
+      FETCH_MAX_PER_ACCOUNT: ${FETCH_MAX_PER_ACCOUNT:-30}
+      WATCH_INTERVAL_SECONDS: ${WATCH_INTERVAL_SECONDS:-10}
+      WATCH_DURATION_SECONDS: ${WATCH_DURATION_SECONDS:-180}
+      WATCH_MAX_CONCURRENT: ${WATCH_MAX_CONCURRENT:-20}
+    # 后端不直接对外，由 frontend 的 nginx 反代
+    expose:
+      - "8000"
+
+  frontend:
+    build: ./frontend
+    container_name: mail_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${WEB_PORT:-8080}:80"
+
+volumes:
+  pgdata:

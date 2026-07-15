@@ -1,0 +1,26 @@
+# Web 框架
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+
+# 数据库（异步 PostgreSQL）
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+
+# 配置与校验
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# HTTP 客户端（刷新 OAuth token 用）
+httpx==0.28.1
+
+# 安全：token 加密 + 面板登录鉴权
+cryptography==44.0.0
+pyjwt==2.10.1
+passlib[bcrypt]==1.7.4
+
+# 后台轮询调度
+APScheduler==3.11.0
+
+# 邮件正文解析（推断注册网站）
+beautifulsoup4==4.12.3
